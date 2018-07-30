@@ -49,8 +49,8 @@ namespace Gremlin.Net.IntegrationTest.Driver
         [Fact]
         public async Task ShouldReuseConnectionForSequentialRequests()
         {
-            var gremlinServer = new GremlinServer(TestHost, TestPort);
-            using (var gremlinClient = new GremlinClient(gremlinServer))
+            const int minConnectionPoolSize = 1;
+            using (var gremlinClient = CreateGremlinClient(minConnectionPoolSize))
             {
                 await gremlinClient.SubmitAsync("");
                 await gremlinClient.SubmitAsync("");
@@ -60,31 +60,75 @@ namespace Gremlin.Net.IntegrationTest.Driver
             }
         }
 
-        [Fact]
-        public void ShouldOnlyCreateConnectionWhenNecessary()
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(8)]
+        public void ShouldStartWithConfiguredNrMinConnections(int minConnectionPoolSize)
         {
-            var gremlinServer = new GremlinServer(TestHost, TestPort);
-            using (var gremlinClient = new GremlinClient(gremlinServer))
+            using (var gremlinClient = CreateGremlinClient(minConnectionPoolSize))
             {
                 var nrConnections = gremlinClient.NrConnections;
-                Assert.Equal(0, nrConnections);
+                Assert.Equal(minConnectionPoolSize, nrConnections);
             }
         }
 
         [Fact]
         public async Task ShouldExecuteParallelRequestsOnDifferentConnections()
         {
-            var gremlinServer = new GremlinServer(TestHost, TestPort);
-            using (var gremlinClient = new GremlinClient(gremlinServer))
+            const int nrParallelRequests = 5;
+            using (var gremlinClient = CreateGremlinClient(nrParallelRequests))
             {
-                var sleepTime = 50;
-                var nrParallelRequests = 5;
+                const int sleepTime = 50;
 
                 await ExecuteMultipleLongRunningRequestsInParallel(gremlinClient, nrParallelRequests, sleepTime);
 
-                var nrConnections = gremlinClient.NrConnections;
-                Assert.Equal(nrParallelRequests, nrConnections);
+                Assert.Equal(nrParallelRequests, gremlinClient.NrConnections);
             }
+        }
+
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(8)]
+        public async Task ShouldNotCreateMoreThanConfiguredNrMaxConnections(int maxConnectionPoolSize)
+        {
+            using (var gremlinClient = CreateGremlinClient(maxConnectionPoolSize: maxConnectionPoolSize))
+            {
+                const int sleepTime = 50;
+
+                await ExecuteMultipleLongRunningRequestsInParallel(gremlinClient, maxConnectionPoolSize + 1, sleepTime);
+
+                Assert.Equal(maxConnectionPoolSize, gremlinClient.NrConnections);
+            }
+        }
+
+        [Fact]
+        public async Task ShouldThrowTimeoutExceptionWhenNoConnectionIsAvailable()
+        {
+            const int nrParallelRequests = 3;
+            const int waitForConnectionTimeoutInMs = 10;
+            using (var gremlinClient = CreateGremlinClient(maxConnectionPoolSize: nrParallelRequests - 1,
+                waitForConnectionTimeoutInMs: waitForConnectionTimeoutInMs))
+            {
+                const int sleepTime = 50;
+
+                await Assert.ThrowsAsync<TimeoutException>(() =>
+                    ExecuteMultipleLongRunningRequestsInParallel(gremlinClient, nrParallelRequests, sleepTime));
+            }
+        }
+
+        private GremlinClient CreateGremlinClient(int minConnectionPoolSize = 0, int maxConnectionPoolSize = 8,
+            int waitForConnectionTimeoutInMs = 3000)
+        {
+            var gremlinServer = new GremlinServer(TestHost, TestPort);
+            return new GremlinClient(gremlinServer,
+                connectionPoolSettings: new ConnectionPoolSettings
+                {
+                    MinSize = minConnectionPoolSize,
+                    MaxSize = maxConnectionPoolSize,
+                    WaitForConnectionTimeout = TimeSpan.FromMilliseconds(waitForConnectionTimeoutInMs)
+                });
         }
     }
 }
